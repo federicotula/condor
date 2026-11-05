@@ -15,11 +15,13 @@
 //  (se avisa y hace falta --forzar para reconstruir).
 //
 // El dataset NO trae porcentaje de participación, cargo puntual ni fechas de designación.
+import { fork } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
 import { parse } from 'csv-parse';
 import yauzl from 'yauzl';
@@ -59,8 +61,8 @@ const SCHEMA = `
   );
 `;
 
-async function open(file = DB_PATH) {
-  const db = await openDb(file, { create: true });
+async function open(file = DB_PATH, opts = {}) {
+  const db = await openDb(file, { create: true, ...opts });
   db.exec(SCHEMA);
   return db;
 }
@@ -227,7 +229,7 @@ const leer = (zip, entry) => new Promise((res, rej) => zip.openReadStream(entry,
 // Procesa un ZIP (archivo local o URL): sus cortes nuevos, en orden. Devuelve los procesados.
 export async function procesarZip({ url, nombre = '', publicado = null }, log = console.log, file = DB_PATH) {
   const local = /^https?:/.test(url) ? await bajar(url, log) : url;
-  const db = await open(file);
+  const db = await open(file, { exclusive: true });
   try {
     const zip = await openZip(local);
     try {
@@ -268,6 +270,32 @@ export async function procesarZip({ url, nombre = '', publicado = null }, log = 
   }
 }
 
+// procesarZip en un proceso hijo: si muere por una señal (SIGBUS, OOM…) se informa como error y
+// la importación sigue con el archivo siguiente. Lo que no llegó a COMMIT queda descartado por SQLite.
+const SENAL = { SIGBUS: 'SIGBUS: falla de acceso a memoria mapeada (típico de SQLite sobre un volumen montado o disco lleno)', SIGKILL: 'SIGKILL: probablemente sin memoria (OOM)', SIGSEGV: 'SIGSEGV: violación de segmento' };
+function procesarZipAislado(archivo, log, file) {
+  return new Promise((resolve, reject) => {
+    // TMPDIR propio: si el hijo muere sin limpiar, el ZIP descargado se borra igual desde acá.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'condor-igj-run-'));
+    const child = fork(fileURLToPath(new URL('./igj-worker.js', import.meta.url)), [], {
+      stdio: ['ignore', 'inherit', 'inherit', 'ipc'], env: { ...process.env, TMPDIR: tmp },
+    });
+    let res = null;
+    child.on('message', (m) => {
+      if (m.log !== undefined) log(m.log);
+      else res = m;
+    });
+    child.on('error', reject);
+    child.on('exit', (code, signal) => {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      if (res?.ok) return resolve(res.ok);
+      if (res?.error) return reject(new Error(res.error));
+      reject(new Error(signal ? `el proceso murió por ${SENAL[signal] || signal}` : `el proceso terminó con código ${code}`));
+    });
+    child.send({ archivo, file });
+  });
+}
+
 // Todo lo publicado que falte (o se haya republicado). forzar: borra la historia IGJ y la rehace.
 export async function sincronizarIgj({ forzar = false, catalogo = null } = {}, log = console.log, file = DB_PATH) {
   const db = await open(file);
@@ -299,7 +327,7 @@ export async function sincronizarIgj({ forzar = false, catalogo = null } = {}, l
   for (const a of lista) {
     log(`IGJ ${a.nombre}${a.orden ? ` (desde ${a.orden})` : ''}:`);
     try {
-      out.push(...(await procesarZip(a, log, file)));
+      out.push(...(await procesarZipAislado(a, log, file)));
     } catch (e) {
       log(`  error: ${e.message} — se saltea; se reintenta en la próxima corrida`);
     }

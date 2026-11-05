@@ -247,7 +247,6 @@ test('sociedades: histórico por año, bajas, reapariciones y sólo lo nuevo', a
     return f;
   };
   const { sincronizar, procesados, estadoRegistro } = await import('../src/lib/sociedades.js');
-  const { DatabaseSync } = await import('node:sqlite');
   const cat = [
     { serie: 'sociedades', anio: 2019, url: csv(2019, ['A', 'B', 'C']), publicado: '2026-03-01' },
     { serie: 'sociedades', anio: 2020, url: csv(2020, ['A', 'C']), publicado: '2026-03-01' },        // B se va
@@ -255,14 +254,14 @@ test('sociedades: histórico por año, bajas, reapariciones y sólo lo nuevo', a
   ];
   await sincronizar({ catalogo: cat }, () => {}, file);
   assert.deepEqual(await sincronizar({ catalogo: cat }, () => {}, file), []); // segunda corrida: nada
-  const reg = () => Object.fromEntries(new DatabaseSync(file).prepare('SELECT * FROM registro').all().map((r) => [r.cuit, r]));
-  let r = reg();
+  const reg = async () => Object.fromEntries((await consultar(file, 'SELECT * FROM registro')).map((r) => [r.cuit, r]));
+  let r = await reg();
   assert.equal(r.A.baja_desde, null);
   assert.equal(r.B.baja_desde, null);           // reapareció
   assert.equal(r.C.baja_desde, 2021);
   assert.equal(r.C.ultimo_anio, 2020);
   assert.equal(r.D.primer_anio, 2021);
-  const padron2020 = new DatabaseSync(file).prepare("SELECT cuit FROM padron WHERE serie = 'sociedades' AND anio = 2020 ORDER BY cuit").all().map((x) => x.cuit);
+  const padron2020 = (await consultar(file, "SELECT cuit FROM padron WHERE serie = 'sociedades' AND anio = 2020 ORDER BY cuit")).map((x) => x.cuit);
   assert.deepEqual(padron2020, ['A', 'C']);
 
   // sólo lo nuevo: nada cambió -> no importa nada
@@ -272,7 +271,7 @@ test('sociedades: histórico por año, bajas, reapariciones y sólo lo nuevo', a
   cat.push({ serie: 'sociedades', anio: 2022, url: csv(2022, ['B']), publicado: '2026-09-18' });
   const hechos = await sincronizar({ solo: 'nuevos', catalogo: cat }, () => {}, file);
   assert.deepEqual(hechos.map((h) => h.anio), [2021, 2022]);
-  r = reg();
+  r = await reg();
   assert.equal(r.A.baja_desde, 2022);
   assert.equal(r.D.ultimo_anio, null);           // ya no figura en ningún año procesado
   assert.equal(r.D.baja_desde, 2019);
@@ -326,21 +325,20 @@ test('IGJ: evolución de autoridades por corte y sólo lo nuevo', async () => {
     'igj-autoridades-202603.csv': aut([[1, 'PEREZ JUAN', 'S', '111'], [1, 'DIAZ EVA', 'A', '444']]),
   });
   const { sincronizarIgj, estadoIgj } = await import('../src/lib/igj.js');
-  const { DatabaseSync } = await import('node:sqlite');
   const cat = [{ nombre: 'b', url: z2, publicado: '1' }, { nombre: 'a', url: z1, publicado: '1' }];
   // sin `orden` (archivos locales) se procesan por nombre: a (01-02) y después b (03)
   const r = await sincronizarIgj({ catalogo: cat }, () => {}, file);
   assert.deepEqual(r.map((x) => x.corte), ['202601', '202602', '202603']);
   assert.deepEqual(r.map((x) => x.cambios), [0, 0, 2]);
-  const q = (sql, ...a) => new DatabaseSync(file).prepare(sql).all(...a).map((x) => ({ ...x }));
+  const q = (sql, ...a) => consultar(file, sql, ...a);
   // PEREZ sigue de 01 a 03 en una sola fila; GOMEZ (espacios distintos = mismo nombre) cerró en 02
-  assert.deepEqual(q("SELECT nombre, desde_corte, hasta_corte FROM igj_autoridades WHERE correlativo = '1' ORDER BY nombre"), [
+  assert.deepEqual(await q("SELECT nombre, desde_corte, hasta_corte FROM igj_autoridades WHERE correlativo = '1' ORDER BY nombre"), [
     { nombre: 'DIAZ EVA', desde_corte: '202603', hasta_corte: '202603' },
     { nombre: 'GOMEZ ANA', desde_corte: '202601', hasta_corte: '202602' },
     { nombre: 'PEREZ JUAN', desde_corte: '202601', hasta_corte: '202603' },
   ]);
   // composición: 1 tuvo dos versiones; 2 pasó a vacía
-  assert.deepEqual(q("SELECT correlativo, desde_corte, hasta_corte, socios, autoridades, altas, bajas FROM igj_composicion ORDER BY correlativo, desde_corte"), [
+  assert.deepEqual(await q("SELECT correlativo, desde_corte, hasta_corte, socios, autoridades, altas, bajas FROM igj_composicion ORDER BY correlativo, desde_corte"), [
     { correlativo: '1', desde_corte: '202601', hasta_corte: '202602', socios: 1, autoridades: 1, altas: 2, bajas: 0 },
     { correlativo: '1', desde_corte: '202603', hasta_corte: '202603', socios: 1, autoridades: 1, altas: 1, bajas: 1 },
     { correlativo: '2', desde_corte: '202601', hasta_corte: '202602', socios: 0, autoridades: 1, altas: 1, bajas: 0 },
@@ -362,3 +360,10 @@ test('IGJ: evolución de autoridades por corte y sólo lo nuevo', async () => {
   const r3 = await sincronizarIgj({ forzar: true, catalogo: [{ nombre: '0', url: z0, publicado: '1' }, ...cat] }, () => {}, file);
   assert.deepEqual(r3.map((x) => x.corte), ['202512', '202601', '202602', '202603']);
 });
+
+// Consulta y cierra: una conexión abierta impediría que la importación tome la base en exclusiva.
+async function consultar(file, sql, ...args) {
+  const { DatabaseSync } = await import('node:sqlite');
+  const d = new DatabaseSync(file);
+  try { return d.prepare(sql).all(...args).map((x) => ({ ...x })); } finally { d.close(); }
+}

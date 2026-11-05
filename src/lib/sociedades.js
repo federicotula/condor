@@ -39,11 +39,24 @@ export const streetKey = (calle) => normalize('domicilio', calle || '').split(' 
 export const parseDireccion = splitDireccion;
 
 let sqlite = null;
-export async function openDb(file = DB_PATH, { create = false } = {}) {
+// exclusive: para importaciones. Con locking_mode=EXCLUSIVE fijado antes de tocar el WAL, SQLite no
+// mapea el archivo -shm en memoria (lo mantiene en el heap). Ese mmap sobre ./data (carpeta del host
+// montada en Docker) es la causa probable de los SIGBUS. Mientras está abierta, nadie más puede leer
+// la base (la web recibe "database is locked").
+export async function openDb(file = DB_PATH, { create = false, exclusive = false } = {}) {
   if (!create && !fs.existsSync(file)) return null;
   sqlite ??= await import('node:sqlite');
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new sqlite.DatabaseSync(file);
+  if (exclusive) {
+    try {
+      db.exec('PRAGMA busy_timeout = 30000; PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE; COMMIT;');
+    } catch (e) {
+      db.close();
+      throw new Error(`no se pudo tomar la base en exclusiva (${e.message}): otro proceso la tiene abierta. ` +
+        'La web suelta la base al minuto de no usarse; si sigue, reiniciá la app (docker compose restart app) y volvé a correr');
+    }
+  }
   // norm(x): misma normalización que razon_norm (sin acentos, minúsculas), para filtrar texto libre.
   db.function?.('norm', { deterministic: true }, (x) => (x === null ? null : normalize('nombre', String(x))));
   db.exec(`
@@ -182,7 +195,7 @@ export async function importarAnio({ serie, anio, url, publicado = null }, log =
   if (!SERIES.includes(serie)) throw new Error(`serie desconocida: ${serie}`);
   if (!(anio >= BIT0 && anio < BIT0 + 53)) throw new Error(`año fuera de rango: ${anio}`);
   const buf = await readSource(url, log);
-  const db = await openDb(file, { create: true });
+  const db = await openDb(file, { create: true, exclusive: true });
   const mask = 2 ** (anio - BIT0);
   try {
     const marcar = db.prepare(`INSERT INTO registro (cuit, serie, anios) VALUES (?, ?, ${mask})
@@ -302,11 +315,15 @@ export async function importar(sources, log = console.log) {
 }
 
 // ------------------------------------------------------------------ consultas
+// Conexión compartida de la web. Se cierra tras un minuto sin uso: una conexión WAL abierta, aunque
+// esté inactiva, impide que la importación tome la base en modo exclusivo.
 let shared = null;
+let idle = null;
 async function db() {
-  if (shared) return shared;
-  shared = await openDb(DB_PATH);
+  shared ??= await openDb(DB_PATH);
   if (!shared) throw new Error(`base de sociedades no importada. Corré: make sociedades-historico  (o condor sociedades-historico; ${DB_PATH})`);
+  clearTimeout(idle);
+  idle = setTimeout(() => { shared?.close(); shared = null; }, 60_000).unref();
   return shared;
 }
 
