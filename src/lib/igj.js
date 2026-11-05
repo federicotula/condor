@@ -116,9 +116,11 @@ export async function procesarCorte(db, corte, { entidades, autoridades, archivo
       db.prepare(`UPDATE igj_autoridades AS a SET hasta_corte = ? WHERE a.hasta_corte = ?
         AND EXISTS (SELECT 1 FROM temp.igj_t t WHERE ${same})`).run(corte, prev);
     }
+    // INDEXED BY: sin estadísticas, SQLite elige ix_igj_aut_doc (documento=?), y como muchísimas filas
+    // comparten documento (vacío, 0…) cada sondeo recorre cientos de miles: cuadrático desde el 2º corte.
     const altas = db.prepare(`INSERT INTO igj_autoridades (correlativo, rol, tipo_doc, documento, nombre, desde_corte, hasta_corte)
       SELECT t.correlativo, t.rol, t.tipo_doc, t.documento, t.nombre, ?, ? FROM temp.igj_t t
-      WHERE NOT EXISTS (SELECT 1 FROM igj_autoridades a WHERE a.correlativo = t.correlativo AND a.hasta_corte = ? AND ${same.replace('t.correlativo = a.correlativo AND ', '')})`)
+      WHERE NOT EXISTS (SELECT 1 FROM igj_autoridades a INDEXED BY ix_igj_aut_ent WHERE a.correlativo = t.correlativo AND a.hasta_corte = ? AND ${same.replace('t.correlativo = a.correlativo AND ', '')})`)
       .run(corte, corte, corte).changes;
     const bajas = prev ? db.prepare('SELECT COUNT(*) AS c FROM igj_autoridades WHERE hasta_corte = ?').get(prev).c : 0;
 
