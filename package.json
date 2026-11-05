@@ -1,0 +1,28 @@
+{
+  "name": "condor",
+  "version": "0.1.0",
+  "description": "Orquestador de módulos de búsqueda de información sobre personas",
+  "type": "module",
+  "bin": {
+    "condor": "src/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "web": "node src/cli.js web",
+    "dev": "node --watch src/cli.js web",
+    "condor": "node src/cli.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "csv-parse": "^5.6.0",
+    "express": "^4.21.0",
+    "fast-xml-parser": "^4.5.7",
+    "ioredis": "^5.4.1",
+    "node-forge": "^1.4.3",
+    "undici": "^6.21.0",
+    "yauzl": "^3.4.0"
+  }
+}

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cóndor</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">Cóndor</div>
+    <nav>
+      <button class="tab active" data-tab="buscar">Buscar</button>
+      <button class="tab" data-tab="modulos">Módulos</button>
+    </nav>
+    <div id="health" class="health"></div>
+  </header>
+
+  <main>
+    <section id="tab-buscar" class="tab-panel active">
+      <form id="search-form" class="search">
+        <input id="query" autocomplete="off" placeholder="Nombre, DNI, CUIT, email…  (probá: demo perez)" autofocus>
+        <button type="submit" id="search-btn">Buscar</button>
+      </form>
+      <div id="search-msg" class="msg"></div>
+
+      <div id="run" class="run hidden">
+        <div class="run-head">
+          <div>
+            <h2 id="run-title"></h2>
+            <div id="run-sub" class="muted"></div>
+          </div>
+          <div id="run-counts" class="counts"></div>
+        </div>
+        <div class="run-body">
+          <div id="tree" class="tree"></div>
+          <aside>
+            <h3>Datos recolectados</h3>
+            <div id="facts"></div>
+          </aside>
+        </div>
+      </div>
+
+      <details class="history">
+        <summary>Historial</summary>
+        <div id="history"></div>
+      </details>
+    </section>
+
+    <section id="tab-modulos" class="tab-panel">
+      <div class="cfg-bar">
+        <div>
+          <strong>Árbol de módulos</strong>
+          <span id="cfg-path" class="muted"></span>
+        </div>
+        <div>
+          <span id="cfg-dirty" class="muted"></span>
+          <button id="history-clear" class="ghost" title="Borra todas las corridas guardadas (las que están en curso se conservan)">Borrar historial</button>
+          <button id="cache-clear" class="ghost" title="Borra los resultados guardados de todos los módulos">Borrar caché</button>
+          <button id="cfg-reload" class="ghost" title="Recargar desde el JSON en disco">Recargar</button>
+        </div>
+      </div>
+      <div id="cfg-warnings"></div>
+      <div id="cfg-tree" class="cfg-tree"></div>
+      <h3>Todos los módulos</h3>
+      <div id="cfg-modules" class="cfg-modules"></div>
+      <h3>Buscadores de personas</h3>
+      <div id="cfg-searchers" class="cfg-modules"></div>
+      <h3>Parámetros generales</h3>
+      <div id="cfg-settings" class="cfg-settings"></div>
+    </section>
+  </main>
+
+  <aside id="drawer" class="drawer hidden">
+    <div class="drawer-top">
+      <div id="drawer-head"></div>
+      <button id="drawer-close" class="ghost small" title="Cerrar (Esc)">✕</button>
+    </div>
+    <div id="drawer-body"></div>
+  </aside>
+
+  <div id="modal" class="modal hidden">
+    <div class="modal-box">
+      <h3>¿A quién buscás?</h3>
+      <div id="modal-sub" class="muted"></div>
+      <div id="candidates"></div>
+      <button id="modal-cancel" class="ghost">Cancelar</button>
+    </div>
+  </div>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>

@@ -1,0 +1,178 @@
+{
+  "settings": {
+    "max_concurrency": 8,
+    "max_depth": 8,
+    "default_timeout": 60,
+    "max_combinations": 10
+  },
+  "searchers": {
+    "bcra_cuit": {
+      "enabled": true,
+      "settings": {}
+    },
+    "arca_dni": {
+      "enabled": false,
+      "settings": {}
+    },
+    "sociedades": {
+      "enabled": true,
+      "settings": {}
+    },
+    "demo": {
+      "enabled": true,
+      "settings": {}
+    },
+    "directo": {
+      "enabled": true,
+      "settings": {}
+    }
+  },
+  "roots": [
+    "bcra_deudores",
+    "bcra_historico",
+    "bcra_cheques_rechazados",
+    "arca_constancia_web",
+    "arca_padron",
+    "arca_constancia",
+    "sociedades_cuit",
+    "boletin_oficial",
+    "causas_judiciales",
+    "profesionales_salud",
+    "demo_padron",
+    "instagram",
+    "facebook"
+  ],
+  "modules": {
+    "bcra_deudores": {
+      "enabled": true,
+      "triggers": [
+        "boletin_oficial"
+      ],
+      "settings": {}
+    },
+    "bcra_historico": {
+      "enabled": true,
+      "triggers": [],
+      "settings": {}
+    },
+    "bcra_cheques_rechazados": {
+      "enabled": true,
+      "triggers": [],
+      "settings": {}
+    },
+    "arca_padron": {
+      "enabled": false,
+      "triggers": [
+        "georef_domicilio",
+        "sociedades_domicilio",
+        "boletin_oficial",
+        "profesionales_salud"
+      ],
+      "settings": {
+        "cuit_representada": "TU_CUIT"
+      }
+    },
+    "arca_constancia": {
+      "enabled": false,
+      "triggers": [
+        "georef_domicilio",
+        "sociedades_domicilio"
+      ],
+      "settings": {}
+    },
+    "sociedades_cuit": {
+      "enabled": true,
+      "triggers": [
+        "georef_domicilio",
+        "sociedades_domicilio",
+        "boletin_oficial"
+      ],
+      "settings": {}
+    },
+    "sociedades_domicilio": {
+      "enabled": true,
+      "triggers": [],
+      "settings": {}
+    },
+    "boletin_oficial": {
+      "enabled": true,
+      "triggers": [],
+      "settings": {}
+    },
+    "causas_judiciales": {
+      "enabled": true,
+      "triggers": [],
+      "settings": {}
+    },
+    "causas_provincia": {
+      "enabled": true,
+      "triggers": [],
+      "settings": {}
+    },
+    "profesionales_salud": {
+      "enabled": true,
+      "triggers": [],
+      "settings": {}
+    },
+    "georef_domicilio": {
+      "enabled": true,
+      "triggers": [
+        "causas_provincia"
+      ],
+      "settings": {}
+    },
+    "llm_domicilio": {
+      "enabled": true,
+      "triggers": [],
+      "settings": {}
+    },
+    "demo_padron": {
+      "enabled": true,
+      "triggers": [
+        "georef_domicilio",
+        "llm_domicilio",
+        "demo_redes",
+        "email_lookup"
+      ],
+      "settings": {}
+    },
+    "demo_redes": {
+      "enabled": true,
+      "triggers": [
+        "georef_domicilio",
+        "demo_vecinos",
+        "instagram"
+      ],
+      "settings": {}
+    },
+    "demo_vecinos": {
+      "enabled": true,
+      "triggers": [],
+      "settings": {}
+    },
+    "instagram": {
+      "enabled": false,
+      "triggers": [],
+      "settings": {}
+    },
+    "facebook": {
+      "enabled": false,
+      "triggers": [],
+      "settings": {}
+    },
+    "email_lookup": {
+      "enabled": false,
+      "triggers": [],
+      "settings": {}
+    },
+    "arca_constancia_web": {
+      "enabled": true,
+      "triggers": [
+        "georef_domicilio",
+        "sociedades_domicilio",
+        "boletin_oficial"
+      ],
+      "settings": {}
+    }
+  }
+}

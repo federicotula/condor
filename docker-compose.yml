@@ -1,0 +1,56 @@
+services:
+  app:
+    build: .
+    # se reinicia solo al editar archivos en src/ (módulos, motor, web)
+    command: ["node", "--watch-path=/app/src", "src/cli.js", "web"]
+    ports:
+      - "${CONDOR_PORT:-8000}:8000"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+    volumes:
+      - ./config:/app/config      # árbol de módulos: se edita desde la web o a mano
+      - ./src:/app/src            # editar módulos sin rebuild (se reinicia solo)
+      - ./data:/app/data          # bases locales (Registro Nacional de Sociedades)
+      - ./secrets:/app/secrets    # certificado y clave de ARCA (opcional; no se sube a git)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
+
+  # Descarga el modelo una vez y termina.
+  ollama-pull:
+    image: ollama/ollama:latest
+    depends_on:
+      - ollama
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c", "sleep 3 && ollama pull ${OLLAMA_MODEL:-llama3.2:3b}"]
+    restart: "no"
+
+volumes:
+  redis-data:
+  ollama-data:
