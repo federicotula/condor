@@ -47,6 +47,9 @@ duplicado y un error simulado).
 1. **Búsqueda**: el texto se clasifica (`cuit`, `dni`, `email`, `telefono`, `nombre`, o `tipo: valor`
    explícito) y se consulta a los **buscadores** (`src/searchers/`). Si hay varios candidatos, la web
    muestra un popup para elegir; la CLI pregunta.
+   Debajo del buscador se puede forzar el tipo (Nombre, DNI, CUIT/CUIL; por defecto Autodetectar) y,
+   si hay más de un buscador para ese tipo, elegir el **método** (o "Todos"). En la CLI: `--tipo nombre`
+   y `--buscador <id>`. Si queda un único candidato, se elige solo.
 2. **Ejecución**: la persona elegida es la raíz. Sus datos disparan los módulos de `roots`.
 3. **Disparo de hijos**: cuando un módulo termina, se evalúan sus `triggers`. Un hijo corre si:
    - tiene disponibles en la rama todos sus `requires` (persona + ancestros), y
@@ -136,6 +139,12 @@ sus hijos quedan como "no se ejecuta".
 Los buscadores (`src/searchers/`) son similares: `{ id, accepts: ['dni'], fallback?, async search(ctx) }`
 y devuelven `[{ label, detail, facts }]`.
 
+Un buscador también puede devolver una **búsqueda manual** para fuentes que no se pueden automatizar:
+`{ manual: true, label, detail, url, field: 'cuit' }`. La web muestra el link (se abre en otra pestaña)
+y un campo para pegar el dato elegido; Cóndor busca de nuevo con ese dato como `field`. Ejemplo:
+`dateas` (búsqueda por nombre en Dateas, que bloquea el acceso automatizado). La URL es el setting
+`url`, con `{q}` en el lugar del nombre.
+
 ## Árbol de módulos (`config/modules.json`)
 
 ```json
@@ -214,16 +223,57 @@ Si algo no coincide, se ajusta en `src/lib/arca.js` (las URLs también se pueden
 
 ### Registro Nacional de Sociedades: importar
 
-No tiene API de consulta: se descarga el dataset de datos abiertos y se indexa localmente en `./data/`.
+No tiene API de consulta: se descargan los datasets de datos abiertos y se indexan localmente en `./data/`.
+Cada archivo anual (2019 en adelante) es una **foto completa del padrón** de ese año, no sólo las altas.
 
 ```bash
-make import-sociedades a="2026"                 # o: 2019..2026, asociaciones, muestra, una URL o un .zip
-docker compose exec app condor import-sociedades 2025 2026 asociaciones
+make sociedades-historico      # todos los años publicados (sociedades + asociaciones), ~1 GB la primera vez
+                               # saltea lo ya importado sin cambios; --forzar reimporta todo
+make sociedades-actualizar     # sólo lo nuevo: años no procesados o republicados en el portal
+make sociedades-estado         # último año procesado, vigentes y bajas por año
+make sociedades-historico a="--desde 2022 --sin-asociaciones"
+make sociedades-historico a="--forzar"
 ```
 
-Se puede importar varios años; si una CUIT aparece en varios, queda la versión más actualizada. El
-dataset no trae socios ni autoridades, sólo datos de la sociedad. Por eso sirve para resolver CUIT de
-empresas y para encontrar sociedades registradas en un domicilio de la persona.
+Los archivos se descubren con la API del portal (cada año tiene una URL con un id propio); se ignoran
+la muestra, los cortes parciales (bimestres) y los CSV fechados que duplican el ZIP del año.
+
+**Bajas:** para cada CUIT se guarda en qué años figura (tabla `registro`, por serie). Si deja de figurar,
+`baja_desde` es el primer año en que ya no está; si reaparece, vuelve a quedar vigente. Reimportar un año
+(p.ej. el actual, que se republica durante el año) lo reemplaza. Cada año se importa en una transacción:
+si falla a mitad, la base queda como estaba. El padrón de un año se arma con la vista `padron`:
+
+```sql
+SELECT * FROM padron WHERE serie = 'sociedades' AND anio = 2021;
+```
+
+Los datos de cada sociedad (domicilios, actividades) son los más recientes que se tengan, no los de ese
+año. El dataset no trae socios ni autoridades. Sirve para resolver CUIT de empresas y para encontrar
+sociedades registradas en un domicilio de la persona; la web muestra si la sociedad sigue en el registro.
+
+`make import-sociedades a="2026"` sigue funcionando para importar años sueltos, una URL o un archivo.
+
+**IGJ (socios y autoridades):** `sociedades-historico` y `sociedades-actualizar` también importan los
+datos abiertos de la Inspección General de Justicia (sólo entidades inscriptas en **CABA**). Cada ZIP del
+portal trae una o más fotos completas ("cortes" AAAAMM); se procesan en orden y se guarda sólo lo que cambia:
+
+- `igj_autoridades`: persona + rol (socio / autoridad / representante) en una entidad, vigente de
+  `desde_corte` a `hasta_corte`. Si sigue igual en el corte siguiente, se extiende; si cambia, queda la historia.
+- `igj_composicion`: versiones de la composición de cada entidad (`altas` / `bajas` respecto de la anterior).
+- `igj_entidades`: datos más recientes (≈40% trae CUIT, que es lo que cruza con el Registro de Sociedades).
+
+El dataset no trae porcentaje de participación, cargo ni fecha de designación, y parece acumulativo: entre
+los cortes 07/2026 y 09/2026 sumó 12.045 personas y no quitó ninguna, así que "figura" no implica "vigente".
+Los ZIP ya procesados no se
+vuelven a bajar; un corte anterior al último procesado se saltea con aviso (`--forzar` reconstruye todo).
+Opciones: `--sin-igj`, `--solo-igj`. La ficha de una sociedad muestra socios/autoridades actuales y su evolución.
+Son datos personales (nombres y documentos): tratarlos como sensibles.
+
+**Pestaña Sociedades (web):** búsqueda por razón social, CUIT (completo o parte), tipo societario,
+provincia, localidad, calle/altura (fiscal o legal), actividad (descripción o código), año de
+constitución y estado en el registro (vigentes, que no figuran más, año en que dejaron de figurar).
+Los filtros se combinan; los textos ignoran mayúsculas y acentos. Click en una fila abre la ficha y
+"Investigar en Cóndor" arranca una corrida con esa CUIT.
 
 ### Boletín Oficial
 

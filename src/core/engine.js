@@ -50,6 +50,22 @@ function* product(pools) {
   for (const x of first) for (const tail of product(rest)) yield [x, ...tail];
 }
 
+export class SearchInputError extends Error {}
+
+// Tipo elegido a mano en la UI/CLI: valida y normaliza el valor en vez de autodetectar.
+export function explicitKind(kind, query) {
+  const q = (query || '').trim();
+  if (!q) throw new SearchInputError('Ingresá un identificador');
+  if (kind === 'cuit' || kind === 'dni') {
+    const d = q.replace(/\D/g, '');
+    if (kind === 'cuit' && d.length !== 11) throw new SearchInputError('El CUIT/CUIL debe tener 11 dígitos');
+    if (kind === 'dni' && (d.length < 6 || d.length > 8)) throw new SearchInputError('El DNI debe tener entre 6 y 8 dígitos');
+    return { [kind]: [d] };
+  }
+  if (!/^[a-z_]+$/.test(kind)) throw new SearchInputError(`Tipo de búsqueda inválido: ${kind}`);
+  return { [kind]: [q] };
+}
+
 export function mergeCandidates(cands) {
   const key = (c) => {
     for (const k of ['cuit', 'dni', 'email']) if (c.facts[k]?.length) return `${k}:${F.normalize(k, c.facts[k][0])}`;
@@ -125,23 +141,36 @@ export class Engine {
   }
 
   // ---------------------------------------------------------------- búsqueda
-  async search(query) {
+  // Buscadores habilitados (para que la UI ofrezca elegir el método de búsqueda).
+  enabledSearchers() {
     const cfg = this.config.load();
-    const detected = F.detect(query);
+    return [...this.searchers.values()].filter((s) => cfg.searchers[s.id]?.enabled).map(searcherMeta);
+  }
+
+  // opts.kind: 'auto' (default) o un tipo explícito ('nombre', 'dni', 'cuit'…) que pisa la autodetección.
+  // opts.searcher: id de un buscador puntual; si se indica, corre sólo ese (sin fallback).
+  async search(query, { kind = 'auto', searcher = null } = {}) {
+    const cfg = this.config.load();
+    const detected = !kind || kind === 'auto' ? F.detect(query) : explicitKind(kind, query);
     const primary = [];
     const fallback = [];
     for (const [id, s] of this.searchers) {
       if (!cfg.searchers[id]?.enabled) continue;
+      if (searcher && id !== searcher) continue;
       if (!(s.accepts || []).some((k) => k in detected)) continue;
-      (s.fallback ? fallback : primary).push(s);
+      (s.fallback && !searcher ? fallback : primary).push(s);
     }
-    let { cands, errors } = await this.#runSearchers(primary, query, detected, cfg);
-    if (!cands.length && fallback.length) {
+    if (searcher && !primary.length) {
+      throw new SearchInputError(`El buscador '${searcher}' no está habilitado o no acepta ${Object.keys(detected)[0] || 'ese dato'}`);
+    }
+    let { cands, manual, errors } = await this.#runSearchers(primary, query, detected, cfg);
+    if (!cands.length && !manual.length && fallback.length) {
       const more = await this.#runSearchers(fallback, query, detected, cfg);
       cands = more.cands;
+      manual = more.manual;
       errors = [...errors, ...more.errors];
     }
-    return { query, detected, candidates: mergeCandidates(cands), errors };
+    return { query, detected, candidates: mergeCandidates(cands), manual, errors };
   }
 
   async #runSearchers(list, query, detected, cfg) {
@@ -158,13 +187,24 @@ export class Engine {
       };
       try {
         const res = (await s.search(ctx)) || [];
-        return { cands: res.map((c) => candidate({ source: s.id, ...c })) };
+        // Un resultado con `manual: true` no es una persona: es un link para buscar a mano
+        // (p.ej. Dateas) y el dato que hay que traer de vuelta (`field`, por defecto cuit).
+        return {
+          cands: res.filter((c) => !c.manual).map((c) => candidate({ source: s.id, ...c })),
+          manual: res.filter((c) => c.manual).map((m) => ({
+            source: s.id, label: m.label || s.name || s.id, detail: m.detail || '', url: m.url, field: m.field || 'cuit',
+          })),
+        };
       } catch (e) {
         this.log.warn(`[condor] buscador ${s.id} falló: ${e.message}`);
-        return { cands: [], error: { searcher: s.id, error: `${e.name}: ${e.message}` } };
+        return { cands: [], manual: [], error: { searcher: s.id, error: `${e.name}: ${e.message}` } };
       }
     }));
-    return { cands: results.flatMap((r) => r.cands), errors: results.filter((r) => r.error).map((r) => r.error) };
+    return {
+      cands: results.flatMap((r) => r.cands),
+      manual: results.flatMap((r) => r.manual),
+      errors: results.filter((r) => r.error).map((r) => r.error),
+    };
   }
 
   // ---------------------------------------------------------------- ejecución

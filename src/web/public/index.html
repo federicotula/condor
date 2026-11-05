@@ -8,13 +8,26 @@
 </head>
 <body>
   <header>
+    <button id="sidebar-toggle" class="ghost icon-btn" title="Mostrar / ocultar historial" aria-label="Historial" aria-controls="sidebar">☰</button>
     <div class="brand">Cóndor</div>
     <nav>
       <button class="tab active" data-tab="buscar">Buscar</button>
+      <button class="tab" data-tab="sociedades">Sociedades</button>
       <button class="tab" data-tab="modulos">Módulos</button>
     </nav>
     <div id="health" class="health"></div>
   </header>
+
+  <aside id="sidebar" class="sidebar" aria-label="Historial de búsquedas">
+    <div class="sidebar-head">
+      <strong>Historial</strong>
+      <button id="sidebar-close" class="ghost small" title="Cerrar">✕</button>
+    </div>
+    <div id="history" class="history-list"></div>
+    <div class="sidebar-foot">
+      <button id="sidebar-clear" class="ghost small">Borrar historial</button>
+    </div>
+  </aside>
 
   <main>
     <section id="tab-buscar" class="tab-panel active">
@@ -22,6 +35,19 @@
         <input id="query" autocomplete="off" placeholder="Nombre, DNI, CUIT, email…  (probá: demo perez)" autofocus>
         <button type="submit" id="search-btn">Buscar</button>
       </form>
+      <div class="search-opts">
+        <div class="seg" role="radiogroup" aria-label="Buscar por">
+          <span class="muted small">Buscar por</span>
+          <label><input type="radio" name="kind" value="auto" checked><span>Autodetectar</span></label>
+          <label><input type="radio" name="kind" value="nombre"><span>Nombre</span></label>
+          <label><input type="radio" name="kind" value="dni"><span>DNI</span></label>
+          <label><input type="radio" name="kind" value="cuit"><span>CUIT/CUIL</span></label>
+        </div>
+        <label id="method-wrap" class="method hidden">
+          <span class="muted small">Método</span>
+          <select id="method"></select>
+        </label>
+      </div>
       <div id="search-msg" class="msg"></div>
 
       <div id="run" class="run hidden">
@@ -41,10 +67,31 @@
         </div>
       </div>
 
-      <details class="history">
-        <summary>Historial</summary>
-        <div id="history"></div>
-      </details>
+    </section>
+
+    <section id="tab-sociedades" class="tab-panel">
+      <form id="soc-form" class="soc-form" autocomplete="off">
+        <label class="wide">Razón social <input name="q" placeholder="palabras de la razón social"></label>
+        <label>CUIT <input name="cuit" inputmode="numeric" placeholder="completo o parte"></label>
+        <label>Tipo societario <select name="tipo"><option value="">Todos</option></select></label>
+        <label>Provincia (fiscal) <select name="provincia"><option value="">Todas</option></select></label>
+        <label>Localidad <input name="localidad" placeholder="fiscal o legal"></label>
+        <label>Calle <input name="calle" placeholder="fiscal o legal"></label>
+        <label>Altura <input name="altura" type="number" min="0" inputmode="numeric"></label>
+        <label class="wide">Actividad <input name="actividad" placeholder="descripción o código (p.ej. construcción, 410011)"></label>
+        <label>Constituida desde <input name="desde" type="number" min="1800" max="2100" placeholder="año"></label>
+        <label>hasta <input name="hasta" type="number" min="1800" max="2100" placeholder="año"></label>
+        <label>Estado en el registro
+          <select name="estado"><option value="">Todas</option><option value="vigente">Vigentes</option><option value="baja">No figuran más</option></select>
+        </label>
+        <label>Dejó de figurar en <select name="baja"><option value="">Cualquier año</option></select></label>
+        <div class="soc-actions">
+          <button type="submit" id="soc-btn">Buscar</button>
+          <button type="button" id="soc-reset" class="ghost">Limpiar</button>
+        </div>
+      </form>
+      <div id="soc-msg" class="msg"></div>
+      <div id="soc-results"></div>
     </section>
 
     <section id="tab-modulos" class="tab-panel">
@@ -83,8 +130,21 @@
     <div class="modal-box">
       <h3>¿A quién buscás?</h3>
       <div id="modal-sub" class="muted"></div>
+      <div id="manual"></div>
       <div id="candidates"></div>
       <button id="modal-cancel" class="ghost">Cancelar</button>
+    </div>
+  </div>
+
+  <div id="soc-modal" class="modal hidden">
+    <div class="modal-box wide">
+      <h3 id="soc-modal-title"></h3>
+      <div id="soc-modal-sub" class="muted"></div>
+      <div id="soc-modal-body"></div>
+      <div class="modal-actions">
+        <button id="soc-run">Investigar en Cóndor</button>
+        <button id="soc-modal-close" class="ghost">Cerrar</button>
+      </div>
     </div>
   </div>
 

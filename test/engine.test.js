@@ -203,3 +203,162 @@ test('parseConstancia (formato por secciones de ARCA)', async () => {
   assert.equal(c2.sinImpuestos, false);
   assert.deepEqual(c2.impuestos, [{ impuesto: 'GANANCIAS PERSONAS FISICAS', alta: '03-2015' }, { impuesto: 'IVA', alta: '03-2015' }]);
 });
+
+test('search: tipo explícito, buscador puntual y resultados manuales', async () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'condor-')), 'modules.json');
+  fs.writeFileSync(file, JSON.stringify({
+    roots: [], modules: {},
+    searchers: { manual: { enabled: true }, pornombre: { enabled: true }, directo: { enabled: true } },
+  }));
+  const searchers = new Map([
+    ['manual', { id: 'manual', accepts: ['nombre'], manual: true, search: (ctx) => [{ manual: true, label: 'M', url: `https://x/?q=${ctx.detected.nombre[0]}` }] }],
+    ['pornombre', { id: 'pornombre', accepts: ['nombre'], search: () => [{ label: 'Ana', facts: { cuit: ['20123456786'] } }] }],
+    ['directo', { id: 'directo', accepts: ['nombre', 'cuit', 'dni'], fallback: true, search: (ctx) => [{ label: 'directo', facts: ctx.detected }] }],
+  ]);
+  const engine = new Engine({ store: new MemoryStore(), config: new ConfigStore(file), llm: null, logger: quiet, modules: new Map(), searchers });
+
+  // auto: "12345678" es DNI; forzando nombre se trata como nombre.
+  assert.deepEqual((await engine.search('12345678')).detected, { dni: ['12345678'] });
+  const all = await engine.search('12345678', { kind: 'nombre' });
+  assert.deepEqual(all.detected, { nombre: ['12345678'] });
+  assert.equal(all.candidates.length, 1);
+  assert.equal(all.manual.length, 1);
+  assert.equal(all.manual[0].field, 'cuit');
+
+  // un buscador puntual: sólo ese, y un resultado manual evita el fallback.
+  const only = await engine.search('ana', { kind: 'nombre', searcher: 'manual' });
+  assert.equal(only.candidates.length, 0);
+  assert.equal(only.manual[0].url, 'https://x/?q=ana');
+  await assert.rejects(engine.search('ana', { searcher: 'nope' }), /no está habilitado/);
+
+  // cuit/dni explícitos se validan y normalizan.
+  assert.deepEqual((await engine.search('20-12345678-6', { kind: 'cuit' })).detected, { cuit: ['20123456786'] });
+  await assert.rejects(engine.search('123', { kind: 'cuit' }), /11 dígitos/);
+  await assert.rejects(engine.search('20123456786', { kind: 'dni' }), /DNI/);
+});
+
+test('sociedades: histórico por año, bajas, reapariciones y sólo lo nuevo', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'condor-soc-'));
+  const file = path.join(dir, 'sociedades.db');
+  const head = 'cuit,razon_social,fecha_hora_contrato_social,tipo_societario,fecha_hora_actualizacion,actividad_codigo';
+  const csv = (anio, cuits) => {
+    const f = path.join(dir, `${anio}.csv`);
+    fs.writeFileSync(f, [head, ...cuits.flatMap((c) => [`${c},SOC ${c},2000-01-01,SA,${anio}-01-01,1`, `${c},SOC ${c},2000-01-01,SA,${anio}-01-01,2`])].join('\n'));
+    return f;
+  };
+  const { sincronizar, procesados, estadoRegistro } = await import('../src/lib/sociedades.js');
+  const { DatabaseSync } = await import('node:sqlite');
+  const cat = [
+    { serie: 'sociedades', anio: 2019, url: csv(2019, ['A', 'B', 'C']), publicado: '2026-03-01' },
+    { serie: 'sociedades', anio: 2020, url: csv(2020, ['A', 'C']), publicado: '2026-03-01' },        // B se va
+    { serie: 'sociedades', anio: 2021, url: csv(2021, ['A', 'B', 'D']), publicado: '2026-03-01' },   // B vuelve, C se va
+  ];
+  await sincronizar({ catalogo: cat }, () => {}, file);
+  assert.deepEqual(await sincronizar({ catalogo: cat }, () => {}, file), []); // segunda corrida: nada
+  const reg = () => Object.fromEntries(new DatabaseSync(file).prepare('SELECT * FROM registro').all().map((r) => [r.cuit, r]));
+  let r = reg();
+  assert.equal(r.A.baja_desde, null);
+  assert.equal(r.B.baja_desde, null);           // reapareció
+  assert.equal(r.C.baja_desde, 2021);
+  assert.equal(r.C.ultimo_anio, 2020);
+  assert.equal(r.D.primer_anio, 2021);
+  const padron2020 = new DatabaseSync(file).prepare("SELECT cuit FROM padron WHERE serie = 'sociedades' AND anio = 2020 ORDER BY cuit").all().map((x) => x.cuit);
+  assert.deepEqual(padron2020, ['A', 'C']);
+
+  // sólo lo nuevo: nada cambió -> no importa nada
+  assert.deepEqual(await sincronizar({ solo: 'nuevos', catalogo: cat }, () => {}, file), []);
+  // 2021 republicado sin D, y aparece 2022 sin A
+  cat[2] = { ...cat[2], url: csv(2021, ['A', 'B']), publicado: '2026-09-18' };
+  cat.push({ serie: 'sociedades', anio: 2022, url: csv(2022, ['B']), publicado: '2026-09-18' });
+  const hechos = await sincronizar({ solo: 'nuevos', catalogo: cat }, () => {}, file);
+  assert.deepEqual(hechos.map((h) => h.anio), [2021, 2022]);
+  r = reg();
+  assert.equal(r.A.baja_desde, 2022);
+  assert.equal(r.D.ultimo_anio, null);           // ya no figura en ningún año procesado
+  assert.equal(r.D.baja_desde, 2019);
+  assert.equal((await procesados(file)).at(-1).anio, 2022);
+
+  // un archivo que falla a mitad no deja la base a medias
+  cat.push({ serie: 'sociedades', anio: 2023, url: path.join(dir, 'no-existe.csv'), publicado: '2026-10-01' });
+  await assert.rejects(sincronizar({ solo: 'nuevos', catalogo: cat }, () => {}, file));
+  assert.equal((await procesados(file)).at(-1).anio, 2022);
+
+  assert.deepEqual(estadoRegistro([{ serie: 'sociedades', primer_anio: 2019, ultimo_anio: 2020, baja_desde: 2021 }]),
+    { vigente: false, primer_anio: 2019, ultimo_anio: 2020, baja_desde: 2021, series: ['sociedades'] });
+});
+
+// ZIP mínimo sin compresión (sólo para tests).
+async function zipStore(file, entries) {
+  const { crc32 } = await import('node:zlib');
+  const parts = []; const central = []; let off = 0;
+  for (const [name, text] of Object.entries(entries)) {
+    const data = Buffer.from(text); const n = Buffer.from(name); const crc = crc32(data);
+    const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt32LE(crc, 14);
+    lh.writeUInt32LE(data.length, 18); lh.writeUInt32LE(data.length, 22); lh.writeUInt16LE(n.length, 26);
+    const ch = Buffer.alloc(46); ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt32LE(crc, 16);
+    ch.writeUInt32LE(data.length, 20); ch.writeUInt32LE(data.length, 24); ch.writeUInt16LE(n.length, 28); ch.writeUInt32LE(off, 42);
+    parts.push(lh, n, data); central.push(ch, n); off += 30 + n.length + data.length;
+  }
+  const cd = Buffer.concat(central); const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(central.length / 2, 8); end.writeUInt16LE(central.length / 2, 10); end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(off, 16);
+  fs.writeFileSync(file, Buffer.concat([...parts, cd, end]));
+}
+
+test('IGJ: evolución de autoridades por corte y sólo lo nuevo', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'condor-igj-'));
+  const file = path.join(dir, 'sociedades.db');
+  const ent = (rows) => ['﻿numero_correlativo,tipo_societario,descripcion_tipo_societario,razon_social,dada_de_baja,codigo_baja,detalle_baja,cuit',
+    ...rows].join('\n');
+  const aut = (rows) => ['numero_correlativo,apellido_nombre,tipo_administrador,descripcion_tipo_administrador,tipo_documento,descripcion_tipo_documento,numero_documento,genero_autoridad',
+    ...rows.map(([c, nom, rol, doc]) => `${c},${nom},${rol},X,1,DNI,${doc},`)].join('\n');
+  const E = ent(['1,40,SRL,ALFA SRL,,,,30111111118', '2,50,SA,BETA SA,,,,']);
+  const z1 = path.join(dir, 'a.zip');
+  await zipStore(z1, {
+    'igj-entidades-202601.csv': E,
+    'igj-autoridades-202601.csv': aut([[1, 'PEREZ JUAN', 'S', '111'], [1, 'PEREZ JUAN', 'S', '111'], [1, 'GOMEZ ANA', 'A', '222'], [2, 'ROJAS LUIS', 'A', '333']]),
+    'igj-entidades-202602.csv': E, // sin cambios
+    'igj-autoridades-202602.csv': aut([[1, 'PEREZ JUAN', 'S', '111'], [1, 'GOMEZ  ANA', 'A', '222'], [2, 'ROJAS LUIS', 'A', '333']]),
+    'igj-asambleas-202602.csv': 'x',
+  });
+  const z2 = path.join(dir, 'b.zip');
+  await zipStore(z2, {
+    'igj-entidades-202603.csv': E, // en 1 sale GOMEZ y entra DIAZ; 2 se queda sin nadie
+    'igj-autoridades-202603.csv': aut([[1, 'PEREZ JUAN', 'S', '111'], [1, 'DIAZ EVA', 'A', '444']]),
+  });
+  const { sincronizarIgj, estadoIgj } = await import('../src/lib/igj.js');
+  const { DatabaseSync } = await import('node:sqlite');
+  const cat = [{ nombre: 'b', url: z2, publicado: '1' }, { nombre: 'a', url: z1, publicado: '1' }];
+  // sin `orden` (archivos locales) se procesan por nombre: a (01-02) y después b (03)
+  const r = await sincronizarIgj({ catalogo: cat }, () => {}, file);
+  assert.deepEqual(r.map((x) => x.corte), ['202601', '202602', '202603']);
+  assert.deepEqual(r.map((x) => x.cambios), [0, 0, 2]);
+  const q = (sql, ...a) => new DatabaseSync(file).prepare(sql).all(...a).map((x) => ({ ...x }));
+  // PEREZ sigue de 01 a 03 en una sola fila; GOMEZ (espacios distintos = mismo nombre) cerró en 02
+  assert.deepEqual(q("SELECT nombre, desde_corte, hasta_corte FROM igj_autoridades WHERE correlativo = '1' ORDER BY nombre"), [
+    { nombre: 'DIAZ EVA', desde_corte: '202603', hasta_corte: '202603' },
+    { nombre: 'GOMEZ ANA', desde_corte: '202601', hasta_corte: '202602' },
+    { nombre: 'PEREZ JUAN', desde_corte: '202601', hasta_corte: '202603' },
+  ]);
+  // composición: 1 tuvo dos versiones; 2 pasó a vacía
+  assert.deepEqual(q("SELECT correlativo, desde_corte, hasta_corte, socios, autoridades, altas, bajas FROM igj_composicion ORDER BY correlativo, desde_corte"), [
+    { correlativo: '1', desde_corte: '202601', hasta_corte: '202602', socios: 1, autoridades: 1, altas: 2, bajas: 0 },
+    { correlativo: '1', desde_corte: '202603', hasta_corte: '202603', socios: 1, autoridades: 1, altas: 1, bajas: 1 },
+    { correlativo: '2', desde_corte: '202601', hasta_corte: '202602', socios: 0, autoridades: 1, altas: 1, bajas: 0 },
+    { correlativo: '2', desde_corte: '202603', hasta_corte: '202603', socios: 0, autoridades: 0, altas: 0, bajas: 1 },
+  ]);
+  assert.equal((await estadoIgj(file)).ultimo, '202603');
+
+  // segunda corrida: nada; un ZIP republicado con cortes ya hechos no reprocesa; uno viejo se saltea
+  assert.deepEqual(await sincronizarIgj({ catalogo: cat }, () => {}, file), []);
+  const z0 = path.join(dir, 'c.zip');
+  await zipStore(z0, { 'igj-entidades-202512.csv': E, 'igj-autoridades-202512.csv': aut([[1, 'X', 'S', '9']]) });
+  const logs = [];
+  const r2 = await sincronizarIgj({ catalogo: [...cat.map((c) => ({ ...c, publicado: '2' })), { nombre: 'c', url: z0, publicado: '1' }] }, (m) => logs.push(m), file);
+  assert.deepEqual(r2, []);
+  assert.ok(logs.some((m) => /202512.*anterior al último/.test(m)));
+  assert.equal((await estadoIgj(file)).omitidos.length, 1);
+
+  // --forzar reconstruye (ordenado por nombre: a, b, c → 202512 queda afuera por ser anterior)
+  const r3 = await sincronizarIgj({ forzar: true, catalogo: [{ nombre: '0', url: z0, publicado: '1' }, ...cat] }, () => {}, file);
+  assert.deepEqual(r3.map((x) => x.corte), ['202512', '202601', '202602', '202603']);
+});

@@ -68,27 +68,40 @@ program.name('condor').description('Búsqueda de información sobre personas med
 program.command('search')
   .description('Busca personas por un identificador y ejecuta el árbol de módulos')
   .argument('<query...>', 'nombre, DNI, CUIT, email… (o "tipo: valor")')
-  .option('-p, --pick <n>', 'elegir el candidato n sin preguntar', (v) => Number(v))
+  .option('-t, --tipo <tipo>', 'buscar como: auto (default), nombre, dni o cuit', 'auto')
+  .option('-b, --buscador <id>', 'usar sólo este buscador (ver `condor modules`)')
+  .option('-p, --pick <n>', 'elegir el candidato n sin preguntar (o un CUIT/CUIL si hay búsqueda manual)')
   .option('-j, --json <file>', 'guardar la corrida completa en un JSON')
   .option('-d, --details', 'mostrar los datos encontrados por cada módulo')
   .action(async (parts, opts) => withEngine(async (engine) => {
-    const query = parts.join(' ');
-    const res = await engine.search(query);
-    for (const e of res.errors) console.error(C.yellow(`! ${e.searcher}: ${e.error}`));
-    const kind = Object.keys(res.detected)[0] || '?';
-    if (!res.candidates.length) { console.error(`Sin resultados (buscado como ${kind}).`); process.exitCode = 1; return; }
+    let query = parts.join(' ');
+    let res = await engine.search(query, { kind: opts.tipo, searcher: opts.buscador || null });
+    let pick = opts.pick;
+    let person = null;
+    for (;;) {
+      for (const e of res.errors) console.error(C.yellow(`! ${e.searcher}: ${e.error}`));
+      const kind = Object.keys(res.detected)[0] || '?';
+      if (!res.candidates.length && !res.manual.length) { console.error(`Sin resultados (buscado como ${kind}).`); process.exitCode = 1; return; }
+      if (res.candidates.length === 1 && !res.manual.length) { person = res.candidates[0]; break; }
 
-    let person = res.candidates[0];
-    if (res.candidates.length > 1) {
       res.candidates.forEach((cand, i) => console.log(`  ${C.bold(i + 1)}) ${cand.label} ${C.dim([cand.detail, cand.sources.join(',')].filter(Boolean).join(' · '))}`));
-      let n = opts.pick;
-      if (!n) {
+      for (const m of res.manual) console.log(`  ${C.yellow('↗')} ${m.label}: ${m.url}\n    ${C.dim(`buscá a mano y escribí acá el ${m.field}`)}`);
+      let answer = pick;
+      pick = undefined; // --pick vale sólo para la primera pregunta
+      if (!answer) {
+        const range = res.candidates.length ? `[1-${res.candidates.length}]` : '';
+        const hint = [range, ...new Set(res.manual.map((m) => m.field))].filter(Boolean).join(' o ');
         const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-        n = Number(await rl.question(`¿Cuál? [1-${res.candidates.length}]: `));
+        answer = await rl.question(`¿Cuál? ${hint}: `);
         rl.close();
       }
-      person = res.candidates[n - 1];
-      if (!person) { console.error('Opción inválida'); process.exitCode = 1; return; }
+      answer = String(answer).trim();
+      const n = /^\d{1,3}$/.test(answer) ? Number(answer) : NaN;
+      if (res.candidates[n - 1]) { person = res.candidates[n - 1]; break; }
+      const field = res.manual[0]?.field;
+      if (!field || !answer) { console.error('Opción inválida'); process.exitCode = 1; return; }
+      query = `${query} → ${answer}`;
+      res = await engine.search(answer, { kind: field });
     }
     console.log(C.dim(`→ ${person.label}\n`));
 
@@ -199,6 +212,67 @@ program.command('import-sociedades')
     }
     await importar(fuentes, (m) => console.log(C.dim(m)));
   });
+
+program.command('sociedades-historico')
+  .description('Registro Nacional de Sociedades (todos los años, con bajas) + IGJ (autoridades y su evolución)')
+  .option('--desde <año>', 'Registro de Sociedades: empezar desde este año', (v) => Number(v), 0)
+  .option('--sin-asociaciones', 'no importar asociaciones sin fines de lucro')
+  .option('--sin-igj', 'no importar IGJ (autoridades/socios)')
+  .option('--solo-igj', 'importar sólo IGJ')
+  .option('--forzar', 'rehacer todo aunque ya esté procesado (IGJ: borra la historia y la reconstruye)')
+  .action((opts) => importarTodo({ ...opts, solo: opts.forzar ? 'todos' : 'nuevos' }));
+
+program.command('sociedades-actualizar')
+  .description('Importa sólo lo nuevo (años / cortes IGJ no procesados o republicados)')
+  .option('--sin-asociaciones', 'no importar asociaciones sin fines de lucro')
+  .option('--sin-igj', 'no importar IGJ (autoridades/socios)')
+  .action((opts) => importarTodo({ ...opts, solo: 'nuevos' }));
+
+async function importarTodo(opts) {
+  const log = (m) => console.log(C.dim(m));
+  let algo = false;
+  if (!opts.soloIgj) {
+    const { sincronizar } = await import('./lib/sociedades.js');
+    const series = opts.sinAsociaciones ? ['sociedades'] : undefined;
+    algo = (await sincronizar({ solo: opts.solo, desde: opts.desde || 0, series }, log)).length > 0 || algo;
+  }
+  if (!opts.sinIgj) {
+    const { sincronizarIgj } = await import('./lib/igj.js');
+    algo = (await sincronizarIgj({ forzar: !!opts.forzar }, log)).length > 0 || algo;
+  }
+  if (algo) await printEstadoSociedades();
+}
+
+program.command('sociedades-estado')
+  .description('Años importados del Registro Nacional de Sociedades, vigentes y bajas por año')
+  .action(() => printEstadoSociedades());
+
+async function printEstadoSociedades() {
+  const { estado } = await import('./lib/sociedades.js');
+  const e = await estado();
+  if (!e) { console.log('Base de sociedades no importada. Corré: condor sociedades-historico'); return; }
+  const n = (x) => Number(x).toLocaleString('es-AR');
+  console.log(`\n${C.bold('Registro Nacional de Sociedades')}  ${C.dim(`${n(e.sociedades)} CUIT en la base`)}`);
+  for (const serie of [...new Set(e.procesados.map((p) => p.serie))]) {
+    const ps = e.procesados.filter((p) => p.serie === serie);
+    const vig = e.vigentes.find((v) => v.serie === serie)?.c ?? 0;
+    console.log(`\n${C.bold(serie)} · último año procesado: ${C.green(ps.at(-1).anio)} · vigentes: ${n(vig)}`);
+    for (const p of ps) {
+      const bajas = e.bajas.find((b) => b.serie === serie && b.anio === p.anio)?.c;
+      console.log(`  ${p.anio}  ${n(p.cuits).padStart(11)} CUIT${bajas ? C.yellow(`  ${n(bajas)} bajas`) : ''}  ${C.dim(`publicado ${p.publicado?.slice(0, 10) || '?'} · importado ${p.importado.slice(0, 10)}`)}`);
+    }
+  }
+  const { estadoIgj, fmtCorte } = await import('./lib/igj.js');
+  const g = await estadoIgj();
+  if (!g) { console.log(`\n${C.bold('IGJ')} · sin importar`); return; }
+  console.log(`\n${C.bold('IGJ')} · último corte procesado: ${C.green(fmtCorte(g.ultimo))} · ${n(g.entidades)} entidades (${n(g.conCuit)} con CUIT)`);
+  for (const c of g.cortes) {
+    console.log(`  ${fmtCorte(c.corte)}  ${n(c.entidades).padStart(10)} entidades ${n(c.autoridades).padStart(10)} autoridades` +
+      (c.entidades_con_cambios ? C.yellow(`  ${n(c.entidades_con_cambios)} cambiaron (+${n(c.altas)} −${n(c.bajas)})`) : '') +
+      `  ${C.dim(`importado ${c.importado.slice(0, 10)}`)}`);
+  }
+  for (const o of g.omitidos) console.log(C.yellow(`  ! ${o.nombre}: cortes salteados ${o.omitidos} (ver log; --forzar para reconstruir)`));
+}
 
 program.command('arca-csr')
   .description('Genera clave privada y pedido de certificado (CSR) para los web services de ARCA')

@@ -2,7 +2,7 @@
 // Importar antes:  condor import-sociedades 2026   (o: make import-sociedades)
 import { formatCuit } from '../core/ar.js';
 import { view as v } from '../core/view.js';
-import { fmtDom, porCuit, porDomicilio } from '../lib/sociedades.js';
+import { fmtDom, fmtRegistro, porCuit, porDomicilio, vistaSociedad } from '../lib/sociedades.js';
 
 const resumenFila = (s) => ({
   razon_social: s.razon_social,
@@ -10,6 +10,7 @@ const resumenFila = (s) => ({
   tipo: s.tipo_societario,
   domicilio_fiscal: fmtDom(s, 'fiscal'),
   constitucion: s.fecha_contrato?.slice(0, 10),
+  registro: s.registro ? { value: fmtRegistro(s.registro), tone: s.registro.vigente ? 'ok' : 'warn' } : '—',
 });
 
 export default [
@@ -34,28 +35,8 @@ export default [
           actividad: activas.map((a) => a.descripcion).filter(Boolean),
         },
         data: s,
-        summary: `${s.razon_social} · ${s.tipo_societario || ''}`.trim(),
-        view: [
-          v.stats([
-            { label: 'Tipo', value: s.tipo_societario || '—' },
-            { label: 'Constitución', value: s.fecha_contrato?.slice(0, 10) || '—', format: 'date' },
-            { label: 'Actividades activas', value: activas.length },
-          ]),
-          v.kv([
-            { label: 'Razón social', value: s.razon_social },
-            { label: 'CUIT', value: formatCuit(s.cuit) },
-            { label: 'Domicilio fiscal', value: fiscal, tone: s.fiscal_estado && s.fiscal_estado !== 'CONFIRMADO' ? 'warn' : undefined },
-            { label: 'Estado dom. fiscal', value: s.fiscal_estado },
-            { label: 'Domicilio legal', value: legal },
-            { label: 'Estado dom. legal', value: s.legal_estado },
-            { label: 'Última actualización', value: s.fecha_actualizacion?.slice(0, 10), format: 'date' },
-          ].filter((x) => x.value)),
-          v.table(s.actividades.map((a) => ({
-            orden: a.orden === 0 ? 'monotributo' : a.orden === 1 ? 'principal' : 'secundaria',
-            codigo: a.codigo, actividad: a.descripcion,
-            estado: { value: a.estado === 'BD' ? 'baja' : 'activa', tone: a.estado === 'BD' ? 'muted' : 'ok' },
-          })), { title: 'Actividades', emptyText: 'sin actividades informadas' }),
-        ],
+        summary: [s.razon_social, s.tipo_societario, s.registro && !s.registro.vigente ? `no figura desde ${s.registro.baja_desde}` : null].filter(Boolean).join(' · '),
+        view: vistaSociedad(s),
       };
     },
   },

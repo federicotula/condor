@@ -16,7 +16,7 @@ export default {
       : await porNombre(ctx.detected.nombre[0], ctx.settings.limit || 15);
     return rows.map((s) => ({
       label: s.razon_social,
-      detail: [`CUIT ${formatCuit(s.cuit)}`, s.tipo_societario, fmtDom(s, 'fiscal')].filter(Boolean).join(' · '),
+      detail: [`CUIT ${formatCuit(s.cuit)}`, s.tipo_societario, fmtDom(s, 'fiscal'), s.registro && !s.registro.vigente ? `no figura desde ${s.registro.baja_desde}` : null].filter(Boolean).join(' · '),
       facts: { cuit: [s.cuit], nombre: [s.razon_social] },
     }));
   },

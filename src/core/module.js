@@ -81,6 +81,6 @@ export function moduleMeta(m) {
 export function searcherMeta(s) {
   return {
     id: s.id, name: s.name || s.id, description: s.description || '',
-    accepts: s.accepts || [], fallback: !!s.fallback, default_settings: s.defaultSettings || {},
+    accepts: s.accepts || [], fallback: !!s.fallback, manual: !!s.manual, default_settings: s.defaultSettings || {},
   };
 }

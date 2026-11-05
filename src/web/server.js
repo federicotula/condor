@@ -1,8 +1,10 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { buildEngine } from '../core/bootstrap.js';
 import { ConfigError, configWarnings } from '../core/config.js';
+import { SearchInputError } from '../core/engine.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 
@@ -14,7 +16,7 @@ export async function createApp(engine) {
   app.use('/files', express.static(path.resolve(process.env.CONDOR_DATA ?? 'data', 'files')));
 
   const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((e) => {
-    const code = e instanceof ConfigError ? 400 : 500;
+    const code = e instanceof ConfigError || e instanceof SearchInputError ? 400 : 500;
     if (code === 500) console.error(e);
     res.status(code).json({ error: e.message });
   });
@@ -26,8 +28,11 @@ export async function createApp(engine) {
   app.post('/api/search', wrap(async (req, res) => {
     const query = String(req.body?.query || '').trim();
     if (!query) return res.status(400).json({ error: 'Ingresá un identificador' });
-    res.json(await engine.search(query));
+    const { kind = 'auto', searcher = null } = req.body || {};
+    res.json(await engine.search(query, { kind: String(kind), searcher: searcher ? String(searcher) : null }));
   }));
+
+  app.get('/api/searchers', wrap(async (_req, res) => res.json(engine.enabledSearchers())));
 
   app.post('/api/runs', wrap(async (req, res) => {
     const { person, query = '' } = req.body || {};
@@ -76,6 +81,31 @@ export async function createApp(engine) {
 
   app.delete('/api/cache', wrap(async (req, res) => {
     res.json({ deleted: await engine.store.cacheClear(req.query.module || null) });
+  }));
+
+  // Explorador del Registro Nacional de Sociedades (pestaña Sociedades).
+  const soc = () => import('../lib/sociedades.js');
+  const sinBase = async (res) => {
+    const { DB_PATH } = await soc();
+    if (fs.existsSync(DB_PATH)) return false;
+    res.status(404).json({ error: 'La base de sociedades no está importada.', comando: 'make sociedades-historico' });
+    return true;
+  };
+  app.get('/api/sociedades/opciones', wrap(async (_req, res) => {
+    if (await sinBase(res)) return;
+    res.json(await (await soc()).opciones());
+  }));
+  app.get('/api/sociedades', wrap(async (req, res) => {
+    if (await sinBase(res)) return;
+    const { page, per, ...filtros } = req.query;
+    res.json(await (await soc()).explorar(filtros, { page, per }));
+  }));
+  app.get('/api/sociedades/:cuit', wrap(async (req, res) => {
+    if (await sinBase(res)) return;
+    const { porCuit, vistaSociedad } = await soc();
+    const s = await porCuit(String(req.params.cuit).replace(/\D/g, ''));
+    if (!s) return res.status(404).json({ error: 'No figura en la base' });
+    res.json({ sociedad: s, view: vistaSociedad(s) });
   }));
 
   app.get('/api/catalog', wrap(async (_req, res) => res.json(await engine.catalog())));

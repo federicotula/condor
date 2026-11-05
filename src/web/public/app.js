@@ -21,6 +21,7 @@ document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () 
   document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('active', x === b));
   document.querySelectorAll('.tab-panel').forEach((p) => p.classList.toggle('active', p.id === `tab-${b.dataset.tab}`));
   if (b.dataset.tab === 'modulos') loadConfig();
+  if (b.dataset.tab === 'sociedades') loadSocOpciones();
 }));
 
 async function loadHealth() {
@@ -39,6 +40,45 @@ setInterval(loadHealth, 30000);
 
 // ------------------------------------------------------------------ búsqueda
 let lastQuery = '';
+const KIND_LABEL = { auto: 'autodetectar', nombre: 'nombre', dni: 'DNI', cuit: 'CUIT/CUIL' };
+
+// Tipo de búsqueda (autodetectar por defecto) y método: buscadores habilitados para ese tipo.
+// El método sólo se ofrece con un tipo elegido y si hay más de un buscador posible.
+let searchers = [];
+const selectedKind = () => document.querySelector('input[name="kind"]:checked')?.value || 'auto';
+function renderMethods() {
+  const kind = selectedKind();
+  const opts = kind === 'auto' ? [] : searchers.filter((s) => !s.fallback && s.accepts.includes(kind));
+  const sel = $('#method');
+  const prev = sel.value;
+  sel.replaceChildren(h('option', { value: '' }, 'Todos'), ...opts.map((s) => h('option', { value: s.id }, s.name)));
+  sel.value = opts.some((s) => s.id === prev) ? prev : '';
+  $('#method-wrap').classList.toggle('hidden', opts.length < 2);
+}
+async function loadSearchers() {
+  try { searchers = await api('/api/searchers'); } catch { searchers = []; }
+  renderMethods();
+}
+const PLACEHOLDER = {
+  auto: $('#query').placeholder, nombre: 'Nombre y apellido', dni: 'DNI (con o sin puntos)', cuit: 'CUIT/CUIL (con o sin guiones)',
+};
+document.querySelectorAll('input[name="kind"]').forEach((r) => r.addEventListener('change', () => {
+  $('#query').placeholder = PLACEHOLDER[selectedKind()] || PLACEHOLDER.auto;
+  renderMethods();
+  $('#query').focus();
+}));
+loadSearchers();
+
+async function doSearch(query, kind = 'auto', searcher = '') {
+  const res = await api('/api/search', { method: 'POST', body: JSON.stringify({ query, kind, searcher: searcher || null }) });
+  const errs = res.errors.map((e) => `${e.searcher}: ${e.error}`).join(' · ');
+  const detected = Object.keys(res.detected)[0] || '?';
+  if (!res.candidates.length && !res.manual.length) return setMsg(`Sin resultados (buscado como ${detected}). ${errs}`, true);
+  setMsg(errs ? `Avisos: ${errs}` : '');
+  // Un único resultado y nada para buscar a mano: se elige solo.
+  if (res.candidates.length === 1 && !res.manual.length) return startRun(res.candidates[0]);
+  showCandidates(res, detected);
+}
 
 $('#search-form').addEventListener('submit', async (ev) => {
   ev.preventDefault();
@@ -48,13 +88,7 @@ $('#search-form').addEventListener('submit', async (ev) => {
   setMsg('Buscando…');
   $('#search-btn').disabled = true;
   try {
-    const res = await api('/api/search', { method: 'POST', body: JSON.stringify({ query }) });
-    const errs = res.errors.map((e) => `${e.searcher}: ${e.error}`).join(' · ');
-    const kind = Object.keys(res.detected)[0] || '?';
-    if (!res.candidates.length) return setMsg(`Sin resultados (buscado como ${kind}). ${errs}`, true);
-    setMsg(errs ? `Avisos: ${errs}` : '');
-    if (res.candidates.length === 1) return startRun(res.candidates[0]);
-    showCandidates(res.candidates, kind);
+    await doSearch(query, selectedKind(), $('#method-wrap').classList.contains('hidden') ? '' : $('#method').value);
   } catch (e) {
     setMsg(e.message, true);
   } finally {
@@ -68,15 +102,58 @@ function setMsg(text, err = false) {
   m.classList.toggle('err', err);
 }
 
-function showCandidates(cands, kind) {
-  $('#modal-sub').textContent = `${cands.length} coincidencias (buscado como ${kind})`;
+const closeModal = () => $('#modal').classList.add('hidden');
+
+// Bloque de búsqueda manual (p.ej. Dateas): link para abrir afuera + campo para pegar el dato elegido.
+function manualBlock(m, origQuery) {
+  const fieldLabel = KIND_LABEL[m.field] || m.field;
+  const input = h('input', { placeholder: `Pegá el ${fieldLabel} elegido`, autocomplete: 'off', inputmode: m.field === 'nombre' ? 'text' : 'numeric' });
+  const err = h('div', { class: 'msg err small' });
+  const go = h('button', { type: 'submit' }, 'Continuar');
+  const form = h('form', {
+    class: 'manual-form',
+    onsubmit: async (ev) => {
+      ev.preventDefault();
+      const value = input.value.trim();
+      if (!value) return input.focus();
+      go.disabled = true;
+      err.textContent = '';
+      try {
+        lastQuery = `${origQuery} → ${value}`;
+        closeModal();
+        setMsg('Buscando…');
+        await doSearch(value, m.field);
+      } catch (e) {
+        $('#modal').classList.remove('hidden');
+        setMsg('');
+        err.textContent = e.message;
+      } finally {
+        go.disabled = false;
+      }
+    },
+  }, input, go);
+  return h('div', { class: 'manual' },
+    h('div', { class: 'manual-head' },
+      h('b', {}, m.label),
+      h('a', { class: 'btn', href: m.url, target: '_blank', rel: 'noopener noreferrer' }, 'Abrir ↗')),
+    m.detail ? h('small', { class: 'muted' }, m.detail) : null,
+    form, err);
+}
+
+function showCandidates(res, kind) {
+  const cands = res.candidates;
+  $('#modal-sub').textContent = cands.length
+    ? `${cands.length} coincidencia${cands.length === 1 ? '' : 's'} (buscado como ${kind})`
+    : `Sin coincidencias automáticas (buscado como ${kind})`;
+  fill($('#manual'), res.manual.map((m) => manualBlock(m, res.query)));
   $('#candidates').replaceChildren(...cands.map((c) => h('button', {
     class: 'cand',
-    onclick: () => { $('#modal').classList.add('hidden'); startRun(c); },
+    onclick: () => { closeModal(); startRun(c); },
   }, h('b', {}, c.label), h('small', {}, [c.detail, `fuente: ${c.sources.join(', ')}`].filter(Boolean).join(' · ')))));
   $('#modal').classList.remove('hidden');
+  $('#manual input')?.focus();
 }
-$('#modal-cancel').addEventListener('click', () => $('#modal').classList.add('hidden'));
+$('#modal-cancel').addEventListener('click', closeModal);
 
 // ------------------------------------------------------------------ corrida en vivo
 let current = null;   // run
@@ -106,6 +183,7 @@ function watchRun(id, openNode = null) {
     if (ev.type === 'snapshot') {
       current = ev.run;
       setHash();
+      if (!historyRuns.some((r) => r.id === current.id)) loadHistory(); else renderHistory();
       const waitingInput = Object.values(current.nodes).find((x) => x.status === 'input');
       if (waitingInput) openDrawer(waitingInput.id);
       else if (openNode && current.nodes[openNode]) openDrawer(openNode);
@@ -287,15 +365,65 @@ function flash(id) {
 
 setInterval(() => { if (current?.status === 'running') scheduleRender(); }, 1000); // refresca duraciones
 
+// ------------------------------------------------------------------ barra lateral de historial
+const store = {
+  get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
+  set: (k, val) => { try { localStorage.setItem(k, val); } catch { /* sin storage */ } },
+};
+const narrow = () => window.matchMedia('(max-width: 900px)').matches;
+
+function setSidebar(open, remember = true) {
+  document.body.classList.toggle('sidebar-open', open);
+  $('#sidebar-toggle').setAttribute('aria-expanded', String(open));
+  if (remember && !narrow()) store.set('condor.sidebar', open ? '1' : '0');
+}
+document.body.classList.add('no-anim');
+setSidebar(!narrow() && store.get('condor.sidebar') !== '0', false);
+requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.remove('no-anim')));
+$('#sidebar-toggle').addEventListener('click', () => setSidebar(!document.body.classList.contains('sidebar-open')));
+$('#sidebar-close').addEventListener('click', () => setSidebar(false));
+
+let historyRuns = [];
+function renderHistory() {
+  const box = $('#history');
+  if (!historyRuns.length) return box.replaceChildren(h('div', { class: 'muted small hist-empty' }, 'Todavía no hay búsquedas.'));
+  const fmt = (ts) => new Date(ts * 1000).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  box.replaceChildren(...historyRuns.map((r) => h('button', {
+    class: `hist-item ${current?.id === r.id ? 'active' : ''}`,
+    title: r.query ? `búsqueda: ${r.query}` : '',
+    onclick: () => { watchRun(r.id); if (narrow()) setSidebar(false); },
+  },
+  h('span', { class: 'hist-label' }, h('i', { class: `dot ${r.status === 'done' ? 'ok' : r.status === 'running' ? 'warn' : 'bad'}` }), r.label || '—'),
+  h('span', { class: 'muted small' }, [fmt(r.created_at), r.query].filter(Boolean).join(' · ')))));
+}
+
 async function loadHistory() {
   try {
-    const runs = await api('/api/runs');
-    $('#history').replaceChildren(...runs.map((r) => h('div', { class: 'hist-item', onclick: () => watchRun(r.id) },
-      h('span', { class: 'muted' }, new Date(r.created_at * 1000).toLocaleString('es-AR')),
-      h('span', {}, r.label), h('span', { class: 'muted' }, `(${r.query || ''})`), h('span', { class: 'muted' }, r.status))));
+    historyRuns = await api('/api/runs');
+    renderHistory();
   } catch { /* noop */ }
 }
 loadHistory();
+
+async function clearHistory() {
+  if (!confirm('¿Borrar todo el historial de búsquedas? No se puede deshacer.')) return null;
+  const { deleted } = await api('/api/runs', { method: 'DELETE' });
+  await loadHistory();
+  return deleted;
+}
+$('#sidebar-clear').addEventListener('click', () => clearHistory().catch((e) => alert(e.message)));
+
+// ------------------------------------------------------------------ cerrar con click afuera
+// Modal de candidatos: click en el fondo oscuro.
+$('#modal').addEventListener('click', (e) => { if (e.target === e.currentTarget) $('#modal').classList.add('hidden'); });
+// Panel de detalle: click en cualquier lugar fuera del panel, salvo en un nodo del árbol
+// (eso abre el detalle de ese nodo) o dentro del modal.
+document.addEventListener('click', (e) => {
+  if ($('#drawer').classList.contains('hidden')) return;
+  if (e.target.closest('#drawer, .row, #modal, #sidebar-toggle')) return;
+  if (!e.target.isConnected) return; // el click re-dibujó el elemento (p.ej. botones del panel)
+  closeDrawer();
+});
 
 {
   const p = new URLSearchParams(location.hash.slice(1));
@@ -352,11 +480,9 @@ function renderWarnings(warnings) {
 
 $('#cfg-reload').addEventListener('click', () => loadConfig(true));
 $('#history-clear').addEventListener('click', async () => {
-  if (!confirm('¿Borrar todo el historial de búsquedas? No se puede deshacer.')) return;
   try {
-    const { deleted } = await api('/api/runs', { method: 'DELETE' });
-    $('#cfg-dirty').textContent = `historial borrado (${deleted} corridas)`;
-    loadHistory();
+    const deleted = await clearHistory();
+    if (deleted !== null) $('#cfg-dirty').textContent = `historial borrado (${deleted} corridas)`;
   } catch (e) {
     $('#cfg-dirty').textContent = `error: ${e.message}`;
   }
@@ -450,3 +576,115 @@ function renderConfig() {
   $('#cfg-settings').replaceChildren(...Object.entries(cfg.settings).map(([k, v]) => h('label', {}, k,
     h('input', { type: 'number', value: v, min: 1, onchange: (ev) => { cfg.settings[k] = Number(ev.target.value); markDirty(); } }))));
 }
+
+// Altura real del encabezado, para ubicar la barra lateral justo debajo.
+const syncHeader = () => document.documentElement.style.setProperty('--header-h', `${document.querySelector('header').offsetHeight}px`);
+syncHeader();
+window.addEventListener('resize', syncHeader);
+
+// ------------------------------------------------------------------ pestaña Sociedades
+const nfmt = (n) => Number(n).toLocaleString('es-AR');
+const fmtCuit = (c) => (/^\d{11}$/.test(c) ? `${c.slice(0, 2)}-${c.slice(2, 10)}-${c.slice(10)}` : c);
+const fmtDomSoc = (s, pre) => [[s[`${pre}_calle`], s[`${pre}_numero`]].filter(Boolean).join(' '), s[`${pre}_localidad`], s[`${pre}_provincia`]]
+  .filter(Boolean).join(', ');
+const regLabel = (r) => (!r ? null : r.vigente ? 'vigente' : `no figura desde ${r.baja_desde}`);
+let socPage = 1;
+let socOpcionesOk = false;
+
+function socMsg(text, err = false, extra = null) {
+  fill($('#soc-msg'), text, extra);
+  $('#soc-msg').classList.toggle('err', err);
+}
+
+async function loadSocOpciones() {
+  if (socOpcionesOk) return;
+  try {
+    const o = await api('/api/sociedades/opciones');
+    const form = $('#soc-form');
+    const opts = (sel, vals, first) => sel.replaceChildren(h('option', { value: '' }, first), ...vals.map((v) => h('option', { value: v }, String(v))));
+    opts(form.tipo, o.tipos, 'Todos');
+    opts(form.provincia, o.provincias, 'Todas');
+    opts(form.baja, o.bajas, 'Cualquier año');
+    const ult = o.procesados.at(-1);
+    socMsg(`${nfmt(o.total)} sociedades en la base${ult ? ` · último año importado: ${Math.max(...o.procesados.map((p) => p.anio))}` : ''}`);
+    socOpcionesOk = true;
+  } catch (e) {
+    socMsg(e.message, true, e.message.includes('no está importada') ? h('span', {}, ' Corré ', h('code', {}, 'make sociedades-historico'), '.') : null);
+  }
+}
+
+async function socBuscar(page = 1) {
+  const params = new URLSearchParams();
+  for (const [k, v] of new FormData($('#soc-form'))) if (String(v).trim()) params.set(k, String(v).trim());
+  params.set('page', page);
+  socPage = page;
+  $('#soc-btn').disabled = true;
+  socMsg('Buscando…');
+  try {
+    const r = await api(`/api/sociedades?${params}`);
+    renderSocResultados(r);
+    socMsg('');
+  } catch (e) {
+    socMsg(e.message, true);
+  } finally {
+    $('#soc-btn').disabled = false;
+  }
+}
+
+function renderSocResultados(r) {
+  const box = $('#soc-results');
+  if (!r.rows.length) return box.replaceChildren(h('div', { class: 'muted soc-empty' }, 'Sin resultados con esos filtros.'));
+  const paginas = Math.ceil(r.total / r.per);
+  const desde = (r.page - 1) * r.per + 1;
+  const hasta = desde + r.rows.length - 1;
+  const pager = () => h('div', { class: 'soc-pager' },
+    h('span', { class: 'muted' }, `${nfmt(desde)}–${nfmt(hasta)} de ${nfmt(r.total)}${r.more ? '+' : ''}`),
+    h('div', {},
+      h('button', { class: 'ghost small', disabled: r.page <= 1, onclick: () => socBuscar(r.page - 1) }, '← Anterior'),
+      h('span', { class: 'muted small' }, ` página ${r.page}${r.more ? '' : ` de ${paginas}`} `),
+      h('button', { class: 'ghost small', disabled: !r.more && r.page >= paginas, onclick: () => socBuscar(r.page + 1) }, 'Siguiente →')));
+  box.replaceChildren(
+    pager(),
+    h('div', { class: 'table-wrap' }, h('table', { class: 'vtable soc-table' },
+      h('thead', {}, h('tr', {}, ['Razón social', 'CUIT', 'Tipo', 'Domicilio fiscal', 'Constitución', 'Registro'].map((t) => h('th', {}, t)))),
+      h('tbody', {}, r.rows.map((s) => h('tr', { class: 'clickable', tabindex: 0, onclick: () => socDetalle(s.cuit), onkeydown: (e) => e.key === 'Enter' && socDetalle(s.cuit) },
+        h('td', {}, h('b', {}, s.razon_social || '—')),
+        h('td', { class: 'nowrap' }, fmtCuit(s.cuit)),
+        h('td', {}, s.tipo_societario || '—'),
+        h('td', {}, fmtDomSoc(s, 'fiscal') || '—'),
+        h('td', { class: 'nowrap' }, s.fecha_contrato ? new Date(`${s.fecha_contrato.slice(0, 10)}T12:00:00`).toLocaleDateString('es-AR') : '—'),
+        h('td', { class: 'nowrap' }, s.registro ? h('span', { class: `badge t-${s.registro.vigente ? 'ok' : 'warn'}` }, regLabel(s.registro)) : h('span', { class: 'muted' }, '—'))))))),
+    r.rows.length > 15 ? pager() : null,
+  );
+  if (r.page > 1 || box.getBoundingClientRect().top > window.innerHeight * 0.6) box.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
+
+let socActual = null;
+async function socDetalle(cuit) {
+  try {
+    const { sociedad, view } = await api(`/api/sociedades/${cuit}`);
+    socActual = sociedad;
+    $('#soc-modal-title').textContent = sociedad.razon_social || fmtCuit(cuit);
+    $('#soc-modal-sub').textContent = `CUIT ${fmtCuit(cuit)}`;
+    $('#soc-modal-body').replaceChildren(renderView(view));
+    $('#soc-modal').classList.remove('hidden');
+  } catch (e) {
+    socMsg(e.message, true);
+  }
+}
+
+const closeSocModal = () => $('#soc-modal').classList.add('hidden');
+$('#soc-modal-close').addEventListener('click', closeSocModal);
+$('#soc-modal').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeSocModal(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSocModal(); });
+$('#soc-run').addEventListener('click', () => {
+  const s = socActual;
+  if (!s) return;
+  closeSocModal();
+  lastQuery = `sociedades: ${s.razon_social || s.cuit}`;
+  document.querySelector('.tab[data-tab="buscar"]').click();
+  startRun({ label: s.razon_social || `CUIT ${fmtCuit(s.cuit)}`, detail: `CUIT ${fmtCuit(s.cuit)}`, source: 'sociedades',
+    facts: { cuit: [s.cuit], ...(s.razon_social ? { nombre: [s.razon_social] } : {}) } });
+});
+$('#soc-form').addEventListener('submit', (e) => { e.preventDefault(); socBuscar(1); });
+$('#soc-reset').addEventListener('click', () => { $('#soc-form').reset(); $('#soc-results').replaceChildren(); socMsg(''); socOpcionesOk = false; loadSocOpciones(); });
