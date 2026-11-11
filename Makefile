@@ -1,4 +1,4 @@
-.PHONY: up down restart logs search modules test cache-clear import-sociedades sociedades-historico sociedades-actualizar sociedades-estado arca-csr
+.PHONY: up down restart logs search modules test cache-clear import-sociedades sociedades-historico sociedades-actualizar sociedades-estado audiencias-actualizar audiencias-estado arca-csr
 
 up:            ## levanta todo (web en http://localhost:8000)
 	docker compose up -d --build
@@ -36,6 +36,12 @@ sociedades-actualizar:  ## sólo años / cortes IGJ nuevos o republicados
 
 sociedades-estado:      ## último año procesado, vigentes y bajas por año
 	docker compose exec app condor sociedades-estado
+
+audiencias-actualizar:  ## Registro de Audiencias a la base local (a="--completo", a="--delay 5", a="--desde 2024")
+	docker compose exec app condor audiencias-actualizar $(a)
+
+audiencias-estado:
+	docker compose exec app condor audiencias-estado
 
 arca-csr:      ## make arca-csr cuit=20XXXXXXXXX nombre="Tu Nombre"
 	docker compose exec app condor arca-csr $(cuit) "$(nombre)"

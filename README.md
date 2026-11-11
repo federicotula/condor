@@ -168,6 +168,7 @@ de la web se puede habilitar/deshabilitar, agregar/quitar hijos y editar setting
 | **Registro Nacional de Sociedades** | `sociedades_cuit`, `sociedades_domicilio` (sociedades en el mismo domicilio), buscador `sociedades` | datos abiertos importados a SQLite local | habilitados; requieren importar |
 | **Boletín Oficial** | `boletin_oficial` | buscador del sitio (endpoint no documentado) | habilitado |
 | **Poder Judicial de la Nación + provincias** | `causas_judiciales`, `causas_provincia` | links de consulta manual (captcha / registro) | habilitados |
+| **Registro Único de Audiencias** (gestión de intereses) | `audiencias` (por DNI: como funcionario, solicitante, representado o participante) | API JSON pública del sitio (no documentada) bajada a SQLite local | habilitado; requiere importar |
 | **REFEPS** (profesionales de salud) | `profesionales_salud` | link de consulta manual (sin API pública) | habilitado |
 | Georef | `georef_domicilio` | API pública | habilitado |
 | Ollama | `llm_domicilio` | LLM local | habilitado |
@@ -194,6 +195,32 @@ un captcha). Si en la primera consulta los datos no salen bien, el texto complet
 
 Cualquier módulo puede pedir datos así: `const r = await ctx.ask({ title, text, image, fields: [{ name, label, help }], actions: ['refresh'] })`
 devuelve `{ name: valor }`, `{ __action: 'refresh' }` o `null` (salteado).
+
+### Registro Único de Audiencias: importar
+
+El módulo `audiencias` consulta una copia local (`data/audiencias.db`) de todas las audiencias del registro
+(desde 2003, ~116.000). Se baja de la API que usa el sitio, con `view=export` (detalle completo, incluidos los
+documentos de funcionario, solicitante y participantes).
+
+```bash
+make audiencias-actualizar                 # la primera vez baja todo; después sólo lo que cambió
+make audiencias-actualizar a="--delay 5"   # segundos entre llamadas (default 10, o AUDIENCIAS_DELAY)
+make audiencias-actualizar a="--completo"  # rebaja todos los años
+make audiencias-actualizar a="--desde 2024"
+make audiencias-estado
+```
+
+Entre cada llamada a la API hay una pausa de `--delay` segundos (10 por defecto), incluso en los reintentos.
+La API sólo ordena por fecha y en páginas de hasta 1000, así que no se pagina: el rango de fechas se parte
+hasta que cada tramo entra en una página. Con 10 s de pausa, la primera importación son unas 150-250 llamadas
+(entre media hora y una hora; no se midió completa). Cada año se guarda en una transacción, así que si se corta
+(Ctrl+C) lo ya bajado queda y la próxima corrida sigue.
+
+`audiencias-actualizar` compara año por año la cantidad en la API con la local y rebaja los años que difieren,
+más el año en curso y los futuros (las audiencias se cargan días después de ocurrir y algunas tienen fecha futura).
+Ediciones de años viejos que no cambian la cantidad sólo se ven con `--completo`.
+
+Los datos abiertos de datos.gob.ar (CSV por año) no se usan: llegan hasta agosto 2025 y tienen dos formatos.
 
 ### Historial y caché
 

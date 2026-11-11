@@ -18,6 +18,7 @@ export const KNOWN = {
   usuario_facebook: 'Usuario Facebook',
   bcra_situacion: 'Situación BCRA',
   entidad_financiera: 'Entidad financiera',
+  entidad_representada: 'Entidad representada',
 };
 
 const DIGITS_ONLY = new Set(['cuit', 'dni', 'telefono']);

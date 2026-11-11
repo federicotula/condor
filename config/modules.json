@@ -42,6 +42,7 @@
     "boletin_oficial",
     "causas_judiciales",
     "profesionales_salud",
+    "audiencias",
     "demo_padron",
     "instagram",
     "facebook"
@@ -176,6 +177,11 @@
         "sociedades_domicilio",
         "boletin_oficial"
       ],
+      "settings": {}
+    },
+    "audiencias": {
+      "enabled": true,
+      "triggers": [],
       "settings": {}
     }
   }

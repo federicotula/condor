@@ -274,6 +274,38 @@ async function printEstadoSociedades() {
   for (const o of g.omitidos) console.log(C.yellow(`  ! ${o.nombre}: cortes salteados ${o.omitidos} (ver log; --forzar para reconstruir)`));
 }
 
+program.command('audiencias-actualizar')
+  .description('Registro Único de Audiencias: baja a la base local lo nuevo (o todo, la primera vez)')
+  .option('--completo', 'rebajar todos los años aunque la cantidad coincida con la API')
+  .option('--desde <año>', 'sólo desde este año', (v) => Number(v), 0)
+  .option('--delay <segundos>', 'pausa entre llamadas a la API (default AUDIENCIAS_DELAY o 10)', (v) => Number(v))
+  .action(async (opts) => {
+    const { sincronizar, DEFAULT_DELAY } = await import('./lib/audiencias.js');
+    const ac = new AbortController();
+    process.once('SIGINT', () => { console.log(C.yellow('\ninterrumpido: los años ya guardados quedan; el resto se baja en la próxima corrida')); ac.abort(); });
+    try {
+      await sincronizar({ completo: !!opts.completo, desde: opts.desde, delay: opts.delay ?? DEFAULT_DELAY, signal: ac.signal }, (m) => console.log(C.dim(m)));
+    } catch (e) {
+      if (ac.signal.aborted) { process.exitCode = 130; return; }
+      throw e;
+    }
+    await printEstadoAudiencias();
+  });
+
+program.command('audiencias-estado')
+  .description('Audiencias en la base local por año y fecha de la última actualización')
+  .action(() => printEstadoAudiencias());
+
+async function printEstadoAudiencias() {
+  const { estado, DB_PATH } = await import('./lib/audiencias.js');
+  const e = await estado();
+  if (!e) { console.log(`Base de audiencias no importada (${DB_PATH}). Corré: condor audiencias-actualizar`); return; }
+  const n = (x) => Number(x).toLocaleString('es-AR');
+  console.log(`\n${C.bold('Registro Único de Audiencias')}  ${n(e.audiencias)} audiencias · ${n(e.documentos)} documentos · ` +
+    `${e.rango.desde ?? '?'} → ${e.rango.hasta ?? '?'}  ${C.dim(`actualizada ${e.ultimaSync?.slice(0, 16).replace('T', ' ') ?? '?'}`)}`);
+  for (const r of e.porAnio) console.log(`  ${r.anio}  ${n(r.c).padStart(8)}`);
+}
+
 program.command('arca-csr')
   .description('Genera clave privada y pedido de certificado (CSR) para los web services de ARCA')
   .argument('<cuit>', 'tu CUIT (la que va a usar el certificado)')
